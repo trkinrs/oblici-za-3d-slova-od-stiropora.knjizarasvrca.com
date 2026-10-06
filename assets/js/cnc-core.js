@@ -13,7 +13,29 @@ function simplify(points, tolerance) {
  if(points[0].x===points.at(-1).x&&points[0].y===points.at(-1).y&&out.length<4)return points;
  return out;
 }
-function smoothMoves(moves,tolerance){const out=[moves[0]];for(let i=1;i<moves.length;){if(moves[i].type!=='contour'){out.push(moves[i++]);continue;}let j=i;while(j<moves.length&&moves[j].type==='contour')j++;out.push(...simplify(moves.slice(i-1,j),tolerance).slice(1));i=j;}return out;}
+// Filter pixel stairs in arc-length space before simplification. Each stage uses
+// half the tolerance; entry/exit points and sharp corners remain fixed.
+function smoothContour(points,tolerance){
+ if(points.length<3)return points;
+ const distances=[0];for(let i=1;i<points.length;i++)distances.push(distances[i-1]+Math.hypot(points[i].x-points[i-1].x,points[i].y-points[i-1].y));
+ const total=distances.at(-1),radius=2*tolerance,anchors=[0];
+ const sample=s=>{let lo=0,hi=distances.length-1;while(lo+1<hi){const mid=(lo+hi)>>1;if(distances[mid]<=s)lo=mid;else hi=mid;}const span=distances[hi]-distances[lo],t=span?(s-distances[lo])/span:0;return {x:points[lo].x+(points[hi].x-points[lo].x)*t,y:points[lo].y+(points[hi].y-points[lo].y)*t};};
+ const filtered=points.map((p,i)=>{
+  if(!i||i===points.length-1)return p;
+  const reach=Math.min(radius,distances[i],total-distances[i]);
+  if(reach<1e-9)return p;
+  const a=sample(distances[i]-reach),b=sample(distances[i]+reach),ux=p.x-a.x,uy=p.y-a.y,vx=b.x-p.x,vy=b.y-p.y;
+  if(ux*vx+uy*vy<=.5*Math.hypot(ux,uy)*Math.hypot(vx,vy)){anchors.push(i);return p;}
+  const dx=(a.x+b.x-2*p.x)/4,dy=(a.y+b.y-2*p.y)/4,length=Math.hypot(dx,dy),factor=length?Math.min(1,tolerance/(2*length)):0;
+  return {...p,x:p.x+dx*factor,y:p.y+dy*factor};
+ });
+ anchors.push(points.length-1);const out=[filtered[0]];
+ for(let i=1;i<anchors.length;i++)out.push(...simplify(filtered.slice(anchors[i-1],anchors[i]+1),tolerance/2).slice(1));
+ // Keep tiny closed components from collapsing to a line.
+ if(points[0].x===points.at(-1).x&&points[0].y===points.at(-1).y&&out.length<4)return points;
+ return out;
+}
+function smoothMoves(moves,tolerance){const out=[moves[0]];for(let i=1;i<moves.length;){if(moves[i].type!=='contour'){out.push(moves[i++]);continue;}let j=i;while(j<moves.length&&moves[j].type==='contour')j++;out.push(...smoothContour(moves.slice(i-1,j),tolerance).slice(1));i=j;}return out;}
 function collision(moves){
  const cross=(a,b,c)=>(b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x),same=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y)<1e-7;
  const on=(a,b,p)=>Math.abs(cross(a,b,p))<1e-7&&p.x>=Math.min(a.x,b.x)-1e-7&&p.x<=Math.max(a.x,b.x)+1e-7&&p.y>=Math.min(a.y,b.y)-1e-7&&p.y<=Math.max(a.y,b.y)+1e-7;
@@ -85,20 +107,29 @@ function repeatOnSheet(part,options){
  if(part.moves.length*copies>500000)fail('Previše tačaka za jedan fajl. Smanji broj kopija ili povećaj zaglađivanje.');
  const moves=[{x:0,y:0,type:'start'}];
  const push=p=>{const last=moves[moves.length-1];if(Math.hypot(last.x-p.x,last.y-p.y)>1e-9)moves.push(p);};
- for(const offset of placements){
-  // Travel along the sheet edge and in the gap below each row, never through another copy.
-  const approach=[{x:0,y:offset.y-gap/2},{x:offset.x,y:offset.y-gap/2},{x:offset.x,y:offset.y}];
-  for(const p of approach)push({...p,type:'travel'});
+ for(let i=0;i<placements.length;i++){
+  const offset=placements[i],previous=placements[i-1],corridor=offset.y-gap/2;
+  // Connect in row gaps, changing rows along the outside right edge.
+  if(!previous)push({x:0,y:corridor,type:'travel'});
+  else if(previous.y!==offset.y){
+   push({x:moves.at(-1).x,y:previous.y-gap/2,type:'travel'});
+   push({x:usedX,y:previous.y-gap/2,type:'travel'});
+   push({x:usedX,y:corridor,type:'travel'});
+  }else push({x:moves.at(-1).x,y:corridor,type:'travel'});
+  push({x:offset.x,y:corridor,type:'travel'});
+  push({x:offset.x,y:offset.y,type:'travel'});
   for(const p of part.moves.slice(1))push({...p,x:p.x+offset.x,y:p.y+offset.y});
-  for(const p of approach.slice(0,-1).reverse())push({...p,type:'travel'});
-  push({x:0,y:0,type:'travel'});
  }
+ const last=placements.at(-1);
+ push({x:moves.at(-1).x,y:last.y-gap/2,type:'travel'});
+ push({x:usedX,y:last.y-gap/2,type:'travel'});
+ push({x:usedX,y:0,type:'travel'});
  let length=0;for(let i=1;i<moves.length;i++)length+=Math.hypot(moves[i].x-moves[i-1].x,moves[i].y-moves[i-1].y);
- const code=['(OBLIK - GRBL XY repeated shapes)','(Sheet '+sheetWidth+' x '+sheetHeight+' mm; copies '+copies+')','(Origin bottom left of sheet; heat controlled separately)','G21','G90','G94','G1 X0.000 Y0.000 F'+options.feed.toFixed(3),...moves.slice(1).map(p=>'G1 X'+p.x.toFixed(3)+' Y'+p.y.toFixed(3)),'(End at work origin; turn heat off manually)'].join('\n')+'\n';
+ const code=['(OBLIK - GRBL XY repeated shapes)','(Sheet '+sheetWidth+' x '+sheetHeight+' mm; copies '+copies+')','(Origin bottom left of sheet; heat M3 S1000 and M5)','G21','G90','G94','M3 S1000','G1 X0.000 Y0.000 F'+options.feed.toFixed(3),...moves.slice(1).map(p=>'G1 X'+p.x.toFixed(3)+' Y'+p.y.toFixed(3)),'(End at maximum X on entry Y height)','M5'].join('\n')+'\n';
  return {...part,moves,length,minutes:length/options.feed,code,placements,copies,capacity,usedX,usedY,partTotalX:part.totalX,partTotalY:part.totalY,totalX:sheetWidth,totalY:sheetHeight,count:part.count*copies,entries:part.entries*copies,originalPoints:part.originalPoints*copies};
 }
 
-function plan(mask, w, h, options) {
+function planBase(mask, w, h, options) {
   const {width, margin, feed, bedX, bedY} = options;
   if (![width,margin,feed,bedX,bedY].every(n=>Number.isFinite(n)&&n>0)) fail('Sve dimenzije i brzina moraju biti pozitivni brojevi.');
   if (mask.length!==w*h || w<1 || h<1) fail('Neispravna slika.');
@@ -191,6 +222,10 @@ function plan(mask, w, h, options) {
   if(packagingFrame&&routeUsed==='nearest'){
    for(const p of [{x:w+pad+extraX,y:h+pad},{x:w+pad+extraX,y:-pad-extraY},{x:-pad,y:-pad-extraY},frame[0]])push(p,'frame');
   }
+  // End at the right corner on the entry Y height.
+  const beforeLast=moves.at(-2),lastMove=moves.at(-1);
+  if(lastMove.type==='frame'&&lastMove.x===0&&lastMove.y===0&&beforeLast.x===totalX&&beforeLast.y===0)moves.pop();
+  else moves.push({x:totalX,y:0,type:'travel'});
   // Only merge collinear forward moves of the same kind; preserve every reversal.
   const compact=[];
   for(const p of moves){
@@ -213,8 +248,29 @@ function plan(mask, w, h, options) {
   if(!Number.isFinite(segmentLength)||segmentLength<0||segmentLength>10)fail('Neispravan korak G-code tačaka.');
   if(segmentLength>0){const dense=[compact[0]];for(let i=1;i<compact.length;i++){const a=compact[i-1],b=compact[i],steps=b.type==='contour'?Math.max(1,Math.ceil(Math.hypot(b.x-a.x,b.y-a.y)/segmentLength)):1;if(dense.length+steps>500000)fail('Previše G-code tačaka. Izaberi veći korak ili manji oblik.');for(let j=1;j<=steps;j++)dense.push(j===steps?b:{x:a.x+(b.x-a.x)*j/steps,y:a.y+(b.y-a.y)*j/steps,type:b.type});}compact.length=0;for(const p of dense)compact.push(p);}
   let length=0;for(let i=1;i<compact.length;i++)length+=Math.hypot(compact[i].x-compact[i-1].x,compact[i].y-compact[i-1].y);
-  const code=['(OBLIK - GRBL XY hot wire)','(Set work origin at entry X0 Y0; heat controlled separately)','(Review entry slits and run cold before cutting)','G21','G90','G94','G1 X0.000 Y0.000 F'+feed.toFixed(3),...compact.slice(1).map(p=>'G1 X'+p.x.toFixed(3)+' Y'+p.y.toFixed(3)),'(End at work origin; turn heat off manually)'].join('\n')+'\n';
+  const code=['(OBLIK - GRBL XY hot wire)','(Set work origin at entry X0 Y0; heat M3 S1000 and M5)','(Review entry slits and run cold before cutting)','G21','G90','G94','M3 S1000','G1 X0.000 Y0.000 F'+feed.toFixed(3),...compact.slice(1).map(p=>'G1 X'+p.x.toFixed(3)+' Y'+p.y.toFixed(3)),'(End at maximum X on entry Y height)','M5'].join('\n')+'\n';
   return repeatOnSheet({packagingFrame:packagingFrame||routeUsed==='horizontal',shapeWidth,shapeHeight,routeUsed,routeNote,originalPoints,smoothing,moves:compact,loops:loops.slice(0,count),count,bridges,entries:bridges.filter(b=>b.solid).length,length,totalX,totalY,scale,pad,code,minutes:length/feed},options);
+}
+function plan(mask,w,h,options){
+ const heat=options.heat===undefined?1000:Number(options.heat);if(!Number.isInteger(heat)||heat<0||heat>1000)fail('Snaga grejanja mora biti ceo broj od 0 do 1000.');
+ const direction=options.direction||'up';if(!['up','down'].includes(direction))fail('Nepoznat smer sečenja.');
+ let input=mask;if(direction==='down'){input=new Uint8Array(mask.length);for(let y=0;y<h;y++)for(let x=0;x<w;x++)input[(h-1-y)*w+x]=mask[y*w+x];}
+ const result=planBase(input,w,h,options);result.direction=direction;
+ if(direction==='down'){result.moves=result.moves.map(p=>({...p,y:p.y===0?0:-p.y}));result.code=result.code.replace(/Y(-?\d+\.\d+)/g,(_,y)=>'Y'+(-Number(y)).toFixed(3)).replace(/\(Origin bottom left of sheet; heat M3 S1000 and M5\)/,'(Origin TOP LEFT of sheet; negative Y down)');result.code='(TOP LEFT origin X0 Y0; cutting DOWN in negative Y)\n'+result.code;}
+ const positioning=options.positioning||'absolute';if(!['absolute','relative'].includes(positioning))fail('Nepoznat način pozicioniranja.');result.positioning=positioning;
+ if(positioning==='relative'){
+  let x=0,y=0;
+  result.code=result.code.split('\n').filter(line=>!/^\((Set work origin|Origin |TOP LEFT|End at work origin)/.test(line)).map(line=>{
+   if(line==='G90')return 'G91';
+   const m=line.match(/^G1 X(-?[\d.]+) Y(-?[\d.]+)(.*)$/);if(!m)return line;
+   // Difference rounded endpoints in integer micrometers, avoiding cumulative rounding drift.
+   const nx=Math.round(Number(m[1])*1000),ny=Math.round(Number(m[2])*1000),dx=nx-x,dy=ny-y;x=nx;y=ny;
+   return 'G1 X'+(dx/1000).toFixed(3)+' Y'+(dy/1000).toFixed(3)+m[3];
+  }).join('\n').trimEnd();
+  result.code='(RELATIVE G91 - start at current wire position; no work-zero travel)\n'+result.code+'\nG90\n';
+ }
+ result.heat=heat;result.code=result.code.replace(/^M3 S1000$/m,heat===0?'M5':'M3 S'+heat).replace(/heat M3 S1000 and M5/g,heat===0?'heat OFF':'heat M3 S'+heat+' and M5');
+ return result;
 }
 const api={plan};if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.FoamCNC=api;
 })(typeof window!=='undefined'?window:globalThis);
