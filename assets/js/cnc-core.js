@@ -129,6 +129,29 @@ function repeatOnSheet(part,options){
  return {...part,moves,length,minutes:length/options.feed,code,placements,copies,capacity,usedX,usedY,partTotalX:part.totalX,partTotalY:part.totalY,totalX:sheetWidth,totalY:sheetHeight,count:part.count*copies,entries:part.entries*copies,originalPoints:part.originalPoints*copies};
 }
 
+// A scalloped perimeter enclosing the shape plus its full requested margin.
+function cloudPerimeter(w,h,margin,amplitude,origin){
+ const left=-margin,right=w+margin,top=-margin,bottom=h+margin,points=[origin];
+ const add=p=>{const last=points.at(-1);if(!last||Math.hypot(last.x-p.x,last.y-p.y)>1e-9)points.push(p);};
+ const wave=(a,b,vertical,sign)=>{
+  const length=vertical?Math.abs(b.y-a.y):Math.abs(b.x-a.x),lobes=Math.max(2,Math.round(length/(amplitude*5))),times=new Set([0,1]);
+  for(let i=1;i<lobes*32;i++)times.add(i/(lobes*32));
+  // Keep exact scanline intersections for the contour connection planner.
+  if(vertical)for(let y=.5;y<h;y++)times.add((y-a.y)/(b.y-a.y));
+  for(const t of [...times].filter(t=>t>=0&&t<=1).sort((a,b)=>a-b)){
+   const offset=amplitude*(.65+.35*Math.cos(2*Math.PI*lobes*t));
+   let y=a.y+(b.y-a.y)*t+(vertical?0:sign*offset);if(vertical&&Math.abs(y-(Math.floor(y)+.5))<1e-8)y=Math.floor(y)+.5;
+   add({x:a.x+(b.x-a.x)*t+(vertical?sign*offset:0),y});
+  }
+ };
+ const arc=(x,y,start)=>{for(let i=1;i<=16;i++){const angle=start+i*Math.PI/32;add({x:x+amplitude*Math.cos(angle),y:y+amplitude*Math.sin(angle)});}};
+ wave({x:left,y:bottom},{x:left,y:top},true,-1);arc(left,top,Math.PI);
+ wave({x:left,y:top},{x:right,y:top},false,-1);arc(right,top,1.5*Math.PI);
+ wave({x:right,y:top},{x:right,y:bottom},true,1);arc(right,bottom,0);
+ wave({x:right,y:bottom},{x:left,y:bottom},false,1);arc(left,bottom,.5*Math.PI);
+ add(origin);return points;
+}
+
 function planBase(mask, w, h, options) {
   const {width, margin, feed, bedX, bedY} = options;
   if (![width,margin,feed,bedX,bedY].every(n=>Number.isFinite(n)&&n>0)) fail('Sve dimenzije i brzina moraju biti pozitivni brojevi.');
@@ -141,9 +164,10 @@ function planBase(mask, w, h, options) {
     const a=at(x,y),b=at(x+1,y),c=at(x,y+1),d=at(x+1,y+1);
     if(a===d && b===c && a!==b) contacts.add((x+1)+','+(y+1));
   }
-  const scale=width/w, pad=margin/scale,shapeWidth=width,shapeHeight=h*scale;
+  const scale=width/w,shapeWidth=width,shapeHeight=h*scale;
   const packagingFrame=options.packagingFrame===true,squareFrame=packagingFrame&&options.frameShape==='square';
-  const totalX=squareFrame?Math.max(width,h*scale)+2*margin:width+2*margin,totalY=squareFrame?totalX:h*scale+2*margin;
+  const cloudFrame=options.frameShape==='cloud'&&(packagingFrame||options.route==='horizontal'),cloudAmplitude=cloudFrame?Math.max(8,Math.min(25,width*.04)):0,cloudClearance=cloudFrame?1:0,pad=(margin+cloudAmplitude+cloudClearance)/scale;
+  const totalX=squareFrame?Math.max(width,h*scale)+2*margin:width+2*(margin+cloudAmplitude+cloudClearance),totalY=squareFrame?totalX:h*scale+2*(margin+cloudAmplitude+cloudClearance);
   const extraX=(totalX-width-2*margin)/scale,extraY=(totalY-h*scale-2*margin)/scale;
   if(totalX>bedX || totalY>bedY) fail('Putanja sa marginama prelazi zadati radni hod mašine.');
   if(scale<0.002) fail('Premala dimenzija za rezoluciju koordinata od 0,001 mm.');
@@ -185,6 +209,7 @@ function planBase(mask, w, h, options) {
   frame.push({x:-pad,y:-pad-extraY},{x:w+pad+extraX,y:-pad-extraY});
   for(let y=0;y<h;y++) frame.push({x:w+pad+extraX,y:y+.5});
   frame.push({x:w+pad+extraX,y:h+pad});
+  if(cloudFrame)frame=cloudPerimeter(w,h,margin/scale,cloudAmplitude/scale,frame[0]);
   loops.push(frame);
   const rows=Array.from({length:h},()=>[]);
   loops.forEach((pts,owner)=>pts.forEach((p,index)=>{
@@ -211,8 +236,8 @@ function planBase(mask, w, h, options) {
   if(bridges.length!==count) fail('Nije pronađena povezana putanja bez presecanja kontura.');
   const requestedRoute=options.route||'horizontal';
   if(!['horizontal','nearest'].includes(requestedRoute))fail('Nepoznat način povezivanja kontura.');
-  let routeUsed='horizontal',routeNote='';
-  if(requestedRoute==='nearest'){
+  let routeUsed='horizontal',routeNote=cloudFrame?'Talasasti okvir: horizontalno povezivanje kontura. ':'';
+  if(requestedRoute==='nearest'&&!cloudFrame){
    const optimized=nearestConnections(loops.slice(0,count),frame[0],at,candidates);
    if(optimized){links=optimized.links;bridges=optimized.bridges;frame=optimized.frame;loops[count]=frame;routeUsed='nearest';}
    else routeNote='Za ovaj raspored nije pronađen potpun skup kraćih spojeva; upotrebljen je horizontalni obilazak sa okvirom. ';
