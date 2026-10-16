@@ -62,6 +62,15 @@ function makeMask(useEditor=true){
  const data=cx.getImageData(0,0,w,h).data,mask=new Uint8Array(w*h),threshold=normalized?128:Number($('threshold').value),invert=normalized?false:$('invert').checked;
  let minX=w,minY=h,maxX=-1,maxY=-1;
  for(let y=0;y<h;y++)for(let x=0;x<w;x++){const i=y*w+x,k=i*4;const dark=(.2126*data[k]+.7152*data[k+1]+.0722*data[k+2])<threshold;if(dark!==invert){mask[i]=1;minX=Math.min(minX,x);minY=Math.min(minY,y);maxX=Math.max(maxX,x);maxY=Math.max(maxY,y);}}
+ // Outline mode promises a solid silhouette. Resampling a narrow exterior slit
+ // can trap white pixels; fill these new holes after thresholding as well.
+ if(!editing&&normalized){
+  const outside=new Uint8Array(mask.length),queue=new Int32Array(mask.length);let head=0,tail=0;
+  const visit=i=>{if(!mask[i]&&!outside[i]){outside[i]=1;queue[tail++]=i;}};
+  for(let x=0;x<w;x++){visit(x);visit((h-1)*w+x);}for(let y=0;y<h;y++){visit(y*w);visit(y*w+w-1);}
+  while(head<tail){const i=queue[head++],x=i%w;if(x>0)visit(i-1);if(x<w-1)visit(i+1);if(i>=w)visit(i-w);if(i<w*(h-1))visit(i+w);}
+  for(let i=0;i<mask.length;i++)if(!outside[i])mask[i]=1;
+ }
  const removed=removeSpecks(mask,w,h,Number($('specks').value));
  if(removed){outlineNote+='Uklonjeno sitnih tačaka: '+removed+'. ';minX=w;minY=h;maxX=maxY=-1;for(let y=0;y<h;y++)for(let x=0;x<w;x++)if(mask[y*w+x]){minX=Math.min(minX,x);minY=Math.min(minY,y);maxX=Math.max(maxX,x);maxY=Math.max(maxY,y);}}
  if(maxX<0)throw new Error('Nenađeni oblici: promeni prag ili obrni boje.');

@@ -134,9 +134,12 @@ function planBase(mask, w, h, options) {
   if (![width,margin,feed,bedX,bedY].every(n=>Number.isFinite(n)&&n>0)) fail('Sve dimenzije i brzina moraju biti pozitivni brojevi.');
   if (mask.length!==w*h || w<1 || h<1) fail('Neispravna slika.');
   const at=(x,y)=>x>=0&&y>=0&&x<w&&y<h ? !!mask[y*w+x] : false;
+  // Separate diagonal pixel contacts with a quarter-pixel corner notch.
+  // Keep all full pixels, components and holes; only the shared corner changes.
+  const contacts=new Set();
   for(let y=0;y<h-1;y++) for(let x=0;x<w-1;x++) {
     const a=at(x,y),b=at(x+1,y),c=at(x,y+1),d=at(x+1,y+1);
-    if(a===d && b===c && a!==b) fail('Konture se dodiruju u jednoj tački. Promeni prag ili rezoluciju, ili razdvoji dodir u izvornoj slici.');
+    if(a===d && b===c && a!==b) contacts.add((x+1)+','+(y+1));
   }
   const scale=width/w, pad=margin/scale,shapeWidth=width,shapeHeight=h*scale;
   const packagingFrame=options.packagingFrame===true,squareFrame=packagingFrame&&options.frameShape==='square';
@@ -147,10 +150,22 @@ function planBase(mask, w, h, options) {
   const key=p=>p.x+','+p.y, edges=new Map();
   const edge=(x,y,X,Y)=>{ const p={x,y}; const k=key(p); if(edges.has(k)) fail('Dvosmislena kontura. Promeni prag slike.'); edges.set(k,{a:p,b:{x:X,y:Y}}); };
   for(let y=0;y<h;y++) for(let x=0;x<w;x++) if(at(x,y)) {
-    if(!at(x,y-1)) edge(x,y,x+1,y);
-    if(!at(x+1,y)) edge(x+1,y,x+1,y+1);
-    if(!at(x,y+1)) edge(x+1,y+1,x,y+1);
-    if(!at(x-1,y)) edge(x,y+1,x,y);
+    const side=(ax,ay,bx,by)=>{
+      const dx=bx-ax,dy=by-ay,trim=.25;
+      const first=contacts.has(ax+','+ay),last=contacts.has(bx+','+by);
+      const a={x:ax+(first?dx*trim:0),y:ay+(first?dy*trim:0)};
+      const b={x:bx-(last?dx*trim:0),y:by-(last?dy*trim:0)};
+      edge(a.x,a.y,b.x,b.y);
+      if(last){
+        const inner={x:bx+Math.sign(x+.5-bx)*trim,y:by+Math.sign(y+.5-by)*trim};
+        const next={x:bx-dy*trim,y:by+dx*trim};
+        edge(b.x,b.y,inner.x,inner.y);edge(inner.x,inner.y,next.x,next.y);
+      }
+    };
+    if(!at(x,y-1)) side(x,y,x+1,y);
+    if(!at(x+1,y)) side(x+1,y,x+1,y+1);
+    if(!at(x,y+1)) side(x+1,y+1,x,y+1);
+    if(!at(x-1,y)) side(x,y+1,x,y);
   }
   if(!edges.size) fail('Nema tamnih oblika. Promeni prag ili obrni boje.');
   const loops=[];
@@ -159,7 +174,7 @@ function planBase(mask, w, h, options) {
     do {
       const e=edges.get(key(p)); if(!e) fail('Otvorena kontura.');
       edges.delete(key(p)); points.push(p);
-      if(e.a.x===e.b.x) points.push({x:p.x,y:(p.y+e.b.y)/2});
+      if(e.a.x===e.b.x){const mid=Math.floor(Math.min(p.y,e.b.y))+.5;if(mid>Math.min(p.y,e.b.y)&&mid<Math.max(p.y,e.b.y))points.push({x:p.x,y:mid});}
       p=e.b;
     } while(key(p)!==key(first));
     loops.push(points);
