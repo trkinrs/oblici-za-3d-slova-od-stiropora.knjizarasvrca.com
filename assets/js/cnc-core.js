@@ -295,7 +295,19 @@ function plan(mask,w,h,options){
  const heat=options.heat===undefined?1000:Number(options.heat);if(!Number.isInteger(heat)||heat<0||heat>1000)fail('Snaga grejanja mora biti ceo broj od 0 do 1000.');
  const direction=options.direction||'up';if(!['up','down'].includes(direction))fail('Nepoznat smer sečenja.');
  let input=mask;if(direction==='down'){input=new Uint8Array(mask.length);for(let y=0;y<h;y++)for(let x=0;x<w;x++)input[(h-1-y)*w+x]=mask[y*w+x];}
- const result=planBase(input,w,h,options);result.direction=direction;
+ const endPosition=options.endPosition||'top-right';
+ if(!['top-right','start'].includes(endPosition))fail('Nepoznata završna pozicija.');
+ const result=planBase(input,w,h,options);result.direction=direction;result.endPosition=endPosition;
+ // planBase exits along the outside right edge at the entry height.
+ // Finish through the exterior border, never across the arranged shapes.
+ const end=endPosition==='start'?{x:0,y:0}:{x:result.usedX||result.totalX,y:direction==='down'?0:(result.usedY||result.totalY)};
+ const last=result.moves.at(-1);
+ if(Math.hypot(end.x-last.x,end.y-last.y)>1e-9){
+  result.moves.push({...end,type:'travel'});
+  result.length+=Math.hypot(end.x-last.x,end.y-last.y);result.minutes=result.length/options.feed;
+  result.code=result.code.replace('(End at maximum X on entry Y height)', 'G1 X'+end.x.toFixed(3)+' Y'+end.y.toFixed(3)+'\n(End at maximum X on entry Y height)');
+ }
+ result.code=result.code.replace('(End at maximum X on entry Y height)',endPosition==='start'?'(End at starting position X0 Y0)':'(End at top right of used cutting area)');
  if(direction==='down'){result.moves=result.moves.map(p=>({...p,y:p.y===0?0:-p.y}));result.code=result.code.replace(/Y(-?\d+\.\d+)/g,(_,y)=>'Y'+(-Number(y)).toFixed(3)).replace(/\(Origin bottom left of sheet; heat M3 S1000 and M5\)/,'(Origin TOP LEFT of sheet; negative Y down)');result.code='(TOP LEFT origin X0 Y0; cutting DOWN in negative Y)\n'+result.code;}
  const positioning=options.positioning||'absolute';if(!['absolute','relative'].includes(positioning))fail('Nepoznat način pozicioniranja.');result.positioning=positioning;
  if(positioning==='relative'){

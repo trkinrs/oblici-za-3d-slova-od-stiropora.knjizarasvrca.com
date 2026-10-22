@@ -6,7 +6,7 @@ function paint(ctx,scale=1){ctx.save();ctx.scale(scale,scale);ctx.fillStyle='#18
 function draw(){g.clearRect(0,0,1000,700);paint(g);const e=items[selected];if(e){g.strokeStyle='#e56740';g.lineWidth=2;g.setLineDash([8,5]);g.strokeRect(e.x,e.y,e.w,e.h);g.setLineDash([]);g.fillStyle='#e56740';g.fillRect(e.x+e.w-7,e.y+e.h-7,14,14);}else if(!items.length){g.fillStyle='#64756b';g.font='22px sans-serif';g.textAlign='center';g.fillText('Dodaj trenutni oblik, pa postolje.',500,340);}
  $('editor-list').replaceChildren();items.forEach((e,i)=>{const o=document.createElement('option');o.value=i;o.textContent=e.name;$('editor-list').append(o);});$('editor-list').value=selected;
  for(const key of ['x','y','w','h']){$('editor-'+key).disabled=!e;if(e)$('editor-'+key).value=Math.round(e[key]);}
- $('editor-delete').disabled=!e;$('editor-duplicate').disabled=!e;
+ $('editor-delete').disabled=!e;$('editor-duplicate').disabled=!e;$('editor-split').disabled=!e||!e.image;
 }
 function add(e){if(items.length>=30)throw new Error('Najviše 30 elemenata u editoru.');items.push(e);selected=items.length-1;$('editor-use').checked=true;draw();change();}
 function constrain(e){e.w=Math.max(10,Math.min(980,e.w));e.h=Math.max(10,Math.min(680,e.h));e.x=Math.max(0,Math.min(1000-e.w,e.x));e.y=Math.max(0,Math.min(700-e.h,e.y));}
@@ -15,6 +15,32 @@ $('editor-rect').addEventListener('click',()=>shape('rect'));$('editor-ellipse')
 $('editor-list').addEventListener('change',()=>{selected=Number($('editor-list').value);draw();});
 $('editor-delete').addEventListener('click',()=>{if(selected<0)return;items.splice(selected,1);selected=items.length-1;draw();change();});
 $('editor-duplicate').addEventListener('click',()=>{try{const e=items[selected];if(!e)return;const copy={...e,x:e.x+30,y:e.y+30,name:e.name+' · kopija'};constrain(copy);add(copy);}catch(e){$('editor-note').textContent=e.message;}});
+// Split foreground pixels into four-connected components, keeping holes transparent.
+function splitSelected(){
+ const e=items[selected];if(!e||!e.image)return;
+ const w=e.image.width,h=e.image.height,ctx=e.image.getContext('2d'),pixels=ctx.getImageData(0,0,w,h),data=pixels.data;
+ const labels=new Int32Array(w*h),queue=new Int32Array(w*h),parts=[];
+ const ink=i=>data[i*4+3]>=128;
+ for(let start=0;start<labels.length;start++){
+  if(labels[start]||!ink(start))continue;
+  if(items.length+parts.length>30)throw new Error('Razdvajanje bi prekoračilo ograničenje od 30 elemenata. Obriši neke elemente pa pokušaj ponovo.');
+  const label=parts.length+1;let head=0,tail=1,minX=w,minY=h,maxX=0,maxY=0;queue[0]=start;labels[start]=label;
+  while(head<tail){const i=queue[head++],x=i%w,y=Math.floor(i/w);minX=Math.min(minX,x);minY=Math.min(minY,y);maxX=Math.max(maxX,x);maxY=Math.max(maxY,y);
+   for(const j of [x>0?i-1:-1,x<w-1?i+1:-1,y>0?i-w:-1,y<h-1?i+w:-1])if(j>=0&&!labels[j]&&ink(j)){labels[j]=label;queue[tail++]=j;}
+  }
+  parts.push({label,minX,minY,maxX,maxY});
+ }
+ if(parts.length<2){$('editor-note').textContent='Izabrani oblik je već jedna povezana celina.';return;}
+ const added=parts.map((part,index)=>{
+  const image=document.createElement('canvas');image.width=part.maxX-part.minX+1;image.height=part.maxY-part.minY+1;
+  const target=image.getContext('2d'),crop=target.createImageData(image.width,image.height);
+  for(let y=0;y<image.height;y++)for(let x=0;x<image.width;x++){const i=(y+part.minY)*w+x+part.minX;if(labels[i]===part.label){const k=(y*image.width+x)*4;crop.data.set(data.subarray(i*4,i*4+4),k);}}
+  target.putImageData(crop,0,0);
+  return {image,name:e.name+' · deo '+(index+1),x:e.x+part.minX*e.w/w,y:e.y+part.minY*e.h/h,w:image.width*e.w/w,h:image.height*e.h/h};
+ });
+ items.splice(selected,1,...added);draw();change();$('editor-note').textContent='Oblik je razdvojen na '+added.length+' delova. Izaberi deo klikom ili iz liste i pomeri ga nezavisno.';
+}
+$('editor-split').addEventListener('click',()=>{try{splitSelected();}catch(error){$('editor-note').textContent=error.message;}});
 for(const key of ['x','y','w','h'])$('editor-'+key).addEventListener('change',()=>{const e=items[selected],v=Number($('editor-'+key).value);if(!e||!Number.isFinite(v)){draw();return;}e[key]=v;constrain(e);draw();change();});
 $('editor-use').addEventListener('change',change);
 function point(event){const r=canvas.getBoundingClientRect();return {x:(event.clientX-r.left)*1000/r.width,y:(event.clientY-r.top)*700/r.height};}
